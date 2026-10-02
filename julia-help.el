@@ -18,21 +18,13 @@
 ;;
 ;; A docstring arrives down a vterm escape as JSON: the HTML `Markdown.html'
 ;; produced, plus the metadata `REPL.doc' attaches to the `MD' -- the binding,
-;; the module, and per method the signature, file and line.  The rendering is
-;; ours to do because `julia-repl--show' draws it today, and it lives in
-;; julia-repl.el rather than in EmacsVterm.jl, where it drops the HTML into a
-;; plain buffer and throws the rest away.
+;; the module, and per method the signature, file and line.  Cross-references
+;; become buttons that ask the REPL for the linked symbol's docs, and each
+;; Methods row opens the file and line it names.
 ;;
-;; Two things come of keeping the metadata.  Cross-references work: a docstring
-;; is full of `[`foo`](@ref)' links, which `Markdown.html' writes as
-;; `href="@ref"' with the symbol in the link text, so `shr' hands `browse-url'
-;; the literal "@ref" -- here they become buttons that ask the REPL for that
-;; symbol's docs.  And every method gets a source line, since the `Methods' rows
-;; carry the file and line Julia records and open it.
-;;
-;; Usage: `julia-help-show' is registered in `vterm-eval-cmds' for Julia to
-;; call, and `julia-help-mode' is where the documentation arrives.  Requiring
-;; this file is enough.
+;; Usage: `julia-repl--show' calls `julia-help-show' when Julia sends
+;; `documentation' as `application/json', and `julia-help-mode' is where the
+;; documentation arrives.  Requiring this file is enough.
 
 ;;; Code:
 
@@ -49,11 +41,10 @@ Called with one argument, the symbol the link points at.  Set by
 `julia-help--linkify-refs' and read by `julia-help--follow-ref'; here it is
 `julia-help--send'.
 
-Buffer-local on purpose: two doc buffers open side by side may have come from
-different REPLs, so following a link in one must not send into the other.")
+Buffer-local: two doc buffers open side by side may have come from different
+REPLs.")
 
-;; The rest of the per-buffer state, declared before anything reads it:
-;; `julia-help--pending-back' is set by `julia-help--follow-ref' below, and a
+;; The rest of the per-buffer state, declared before anything reads it: a
 ;; `defvar' after its first use byte-compiles with a free-variable warning.
 
 (defvar-local julia-help--payload nil
@@ -61,9 +52,8 @@ different REPLs, so following a link in one must not send into the other.")
 
 (defvar-local julia-help--repl-buffer nil
   "The vterm buffer the documentation in this buffer arrived from.
-Captured when the payload is displayed: measured at the point `vterm--eval'
-runs, the current buffer is the vterm buffer, so that is where a
-cross-reference is sent back to.")
+Captured when the payload is displayed: `vterm--eval' runs with the vterm buffer
+current, so that is where a cross-reference is sent back to.")
 
 (defvar-local julia-help--back nil
   "Buffer this documentation was reached from, for `julia-help-back'.")
@@ -73,24 +63,23 @@ cross-reference is sent back to.")
 
 (defvar julia-help--pending-back nil
   "Buffer a link was followed from; the next doc buffer links back to it.
-A link has to set this before it sends, because the buffer it is asking for
-does not exist yet -- the payload that creates it arrives later, from the
-REPL, through the vterm filter.")
+A link sets this before it sends -- the buffer it is asking for does not exist
+yet, since the payload that creates it arrives later through the vterm filter.")
 
 (defun julia-help--ref-target (href text)
   "The Julia symbol an `@ref' link in a rendered docstring points at, else nil.
-HREF is the link's `shr-url' property and TEXT the text it covers.  Nil means
-\"not a cross-reference\", and shr is left to handle the link as before.
+HREF is the link's `shr-url' property and TEXT the text it covers; nil leaves
+shr to handle the link as before.
 
 `Markdown.html' writes two shapes, both measured against `@doc sin' on 1.13:
 
   [text](@ref)      -> href \"@ref\"       the target is the link text
   [text](@ref sym)  -> href \"@ref sym\"   the target is written out
 
-The first is why a signature link like ``[`sin(x)`](@ref)`` needs no special
-case: `@doc sin(x)' resolves the method on its own.  The shapes are told apart
-exactly, not with a bare `string-prefix-p', which would read \"@referenced\" as
-a cross-reference and hand `@doc' the tail of it."
+A signature link like ``[`sin(x)`](@ref)`` needs no special case: `@doc sin(x)'
+resolves the method on its own.  The shapes are told apart exactly, not with a
+bare `string-prefix-p', which would read \"@referenced\" as a cross-reference and
+hand `@doc' the tail of it."
   (let* ((raw (cond ((equal href "@ref") text)
                     ((string-prefix-p "@ref " href) (substring href 5))))
          (target (and raw (string-trim raw))))
@@ -98,9 +87,7 @@ a cross-reference and hand `@doc' the tail of it."
 
 (defun julia-help--follow-ref (button)
   "Button action: fetch the documentation of the symbol BUTTON points at.
-Reading the target off the button with `button-get' is what carries it: the
-button is text, and the buffer it will open does not exist yet -- the payload
-that creates it arrives later, from the REPL, through the vterm filter."
+The target rides on the button, read with `button-get'."
   (let ((target (button-get button 'julia-help-ref)))
     (unless julia-help-follow-function
       (error "No Julia doc sender here -- see `julia-help--linkify-refs'"))
@@ -112,11 +99,11 @@ that creates it arrives later, from the REPL, through the vterm filter."
 FOLLOW goes into `julia-help-follow-function'.  Call once, after
 `shr-render-region'.
 
-Both lines of the body are load-bearing.  `make-text-button' supplies the
-`action' that shr's own links lack -- `push-button' on one of those signals
-`void-function nil'.  And the `keymap' write takes the span back from `shr-map',
-which `make-text-button' will not replace: without it the button answers
-`push-button' while RET still runs `shr-browse-url' on the literal \"@ref\".
+`make-text-button' supplies the `action' that shr's own links lack -- `push-button'
+on one of those signals `void-function nil'.  And the `keymap' write takes the span
+back from `shr-map', which `make-text-button' will not replace: without it the
+button answers `push-button' while RET still runs `shr-browse-url' on the literal
+\"@ref\".
 
 shr's `face' is left alone, so a cross-reference looks as it did."
   (setq julia-help-follow-function follow)
@@ -171,12 +158,11 @@ keymap outright; this catches the rest, where shr's keymap has to survive."
 
 (defun julia-help--nonempty (value)
   "VALUE if it is a non-empty string, else nil.
-A docstring sent by `?help' rather than `@doc' reaches here with no binding
-attached: Julia's help mode displays a different `MD' from the one `Docs.doc'
-annotates, so `symbol', `binding', `module' and `typesig' all arrive as \"\".
-That is what this exists for -- an empty string is *true* in elisp, so a guard
-of the shape (when field ...) prints an empty heading, an empty \"Defined in\"
-and an empty \"Signature\" rather than skipping them."
+A docstring fetched with `?help' rather than `@doc' reaches here with no
+binding: Julia's help mode displays a different `MD' from the one `Docs.doc'
+annotates, so `symbol', `binding', `module' and `typesig' all arrive as \"\".  An
+empty string is *true* in elisp, so a guard of the shape (when field ...) would
+print an empty heading rather than skipping it."
   (and (stringp value)
        (not (equal value ""))
        value))
@@ -230,11 +216,8 @@ the normal state, which is where these buffers open:
 
 (defun julia-help--visit (buffer missing)
   "Show the documentation buffer BUFFER, or complain that there is none.
-MISSING is the complaint.  A link followed from one doc buffer to another lands
-in the window the first was read in rather than splitting the frame, when the
-display policy is set up to do that for `julia-help-mode' -- and nothing here
-brings that about: this asks for a plain `pop-to-buffer', and where it goes is
-the policy's business."
+MISSING is the complaint.  Where the buffer is displayed is the display
+policy's business: this asks for a plain `pop-to-buffer'."
   (if (buffer-live-p buffer)
       (pop-to-buffer buffer)
     (user-error "%s" missing)))
@@ -264,10 +247,9 @@ the policy's business."
 
 (defun julia-help--insert-header (payload)
   "Insert the heading block for PAYLOAD: what this documentation is about.
-Inserts nothing at all when the payload names nothing, which is what a
-docstring fetched with `?help' looks like -- see `julia-help--nonempty'.
-The blank separator goes in only when something was written, so the buffer
-never opens on an empty line."
+Inserts nothing at all when the payload names nothing (see
+`julia-help--nonempty').  The blank separator goes in only when something was
+written."
   (let ((binding (julia-help--nonempty (plist-get payload :binding)))
         (symbol (julia-help--nonempty (plist-get payload :symbol)))
         (module (julia-help--nonempty (plist-get payload :module)))
@@ -292,7 +274,7 @@ never opens on an empty line."
 (defun julia-help--insert-methods (results)
   "Insert a Methods section, one row per entry in RESULTS.
 A row whose file is known becomes a button that visits it; a row without one
-stays plain text, because a button that opens nothing is worse than no button."
+stays plain text."
   (when results
     (insert "\n")
     (julia-help--insert-heading (format "Methods (%d)" (length results)))
@@ -332,8 +314,7 @@ stays plain text, because a button that opens nothing is worse than no button."
 
 (defun julia-help--buffer-name (payload)
   "The name of the buffer PAYLOAD belongs in.
-One buffer per symbol, as helpful does -- so following a link to a symbol
-already on screen reuses what is there instead of piling up buffers.
+One buffer per symbol, as helpful does.
 
 Two kinds of payload have no symbol and get the plain name: the HTML-only one
 an older EmacsVterm.jl sends, and the one `?help' produces, which arrives with
@@ -376,12 +357,10 @@ REPL-BUFFER is that REPL, where cross-references are sent back to."
     buffer))
 
 (defun julia-help-show (kind mime data)
-  "Show documentation sent from Julia through the vterm escape.
+  "Show documentation sent from Julia.
 KIND is the sort of thing being sent, MIME how DATA is encoded, DATA a base64
-string.  Registered in `vterm-eval-cmds' for EmacsVterm.jl to call, which
-sends `documentation' as `application/json'; `text/html' is what an older
-EmacsVterm.jl sends, and it still renders, minus the header and the methods,
-because HTML alone does not say what symbol it describes."
+string.  Called from `julia-repl--show' for `documentation' sent as
+`application/json'."
   (cond
    ((and (equal kind "documentation") (equal mime "application/json"))
     (julia-help--display
@@ -392,8 +371,7 @@ because HTML alone does not say what symbol it describes."
     (julia-help--display
      (list :html (julia-help--decode data))
      (current-buffer)))
-   ;; Anything else -- an image, say -- is left to julia-repl, which is where
-   ;; documentation used to go too.
+   ;; Anything else -- an image, say -- is left to julia-repl.
    ((fboundp 'julia-repl--show) (julia-repl--show kind mime data))
    (t (error "Unsupported data kind `%s' or MIME type `%s'" kind mime))))
 
@@ -403,13 +381,6 @@ The payload is base64 all the way from Julia because `vterm--eval' splits the
 escape sequence's arguments with `split-string-and-unquote', which would eat
 the backslashes in raw JSON."
   (decode-coding-string (base64-decode-string base64) 'utf-8))
-
-;; Defined by vterm.el, which is not loaded yet at this point -- the
-;; declaration is what keeps this file free of a free-variable warning.
-(defvar vterm-eval-cmds)
-
-(with-eval-after-load 'vterm
-  (add-to-list 'vterm-eval-cmds '("julia-help-show" julia-help-show)))
 
 (provide 'julia-help)
 ;;; julia-help.el ends here
