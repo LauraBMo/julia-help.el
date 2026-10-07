@@ -38,12 +38,11 @@ button that opens nothing.
 
 ## Requirements
 
-- Emacs 27.1 or later
+- Emacs 29.1 or later
 - [`vterm`](https://github.com/akermu/emacs-libvterm) — the transport
-- [`julia-repl`](https://github.com/tpapp/julia-repl) — only for *non*-documentation
-  payloads, which are passed straight through to `julia-repl--show`. With
-  `EmacsVterm.options.image = true` those are images, and they keep working
-  because of that pass-through.
+- [`julia-repl`](https://github.com/tpapp/julia-repl) — the caller: its
+  `julia-repl--show` hands `documentation` as `application/json` here, and
+  renders every other kind itself, images included.
 - [EmacsVterm.jl](https://github.com/wentasah/EmacsVterm.jl) loaded in the Julia
   REPL
 
@@ -60,7 +59,8 @@ With straight or Doom, declare it as a package instead:
 (package! julia-help :recipe (:host github :repo "LauraBMo/julia-help.el"))
 ```
 
-Nothing needs enabling. Requiring the file registers the vterm command.
+Nothing needs enabling. `julia-repl--show` calls in; there is no vterm command
+to register.
 
 ## Keys
 

@@ -32,8 +32,7 @@
 ;;      escape takes: base64 in, JSON decoded, header and methods drawn, the
 ;;      REPL the payload arrived from remembered;
 ;;   4. `julia-help--send' -- that following a cross-reference really asks the
-;;      REPL for that symbol, in the buffer the docs came from;
-;;   5. that anything which is not documentation is left to julia-repl.
+;;      REPL for that symbol, in the buffer the docs came from.
 ;;
 ;; Nothing here talks to Julia.  The payload is a fixture and `vterm-send-string'
 ;; is replaced, so no REPL is needed and none is disturbed.
@@ -82,7 +81,7 @@
 (defconst julia-help-test--payload
   (concat
    "{\"symbol\":\"sin\",\"binding\":\"Base.sin\",\"module\":\"Base\","
-   "\"typesig\":\"Union{}\","
+   "\"typesig\":null,"
    "\"html\":\"<p>Compute sine of <code>x</code>, see "
    "<a href=\\\"@ref\\\"><code>sind</code></a>.</p>\","
    "\"results\":["
@@ -125,9 +124,6 @@ the first, while shr keeps its own on the second.")
 
 (defvar julia-help-test--sent nil
   "Strings `vterm-send-string' was called with, most recent first.")
-
-(defvar julia-help-test--delegated nil
-  "Arguments `julia-repl--show' was called with, most recent first.")
 
 ;;; Helpers
 
@@ -239,10 +235,10 @@ only the string passed while the real key ran something else."
     (goto-char (point-min))
     (search-forward string nil t)))
 
-(defun julia-help-test--show (payload mime from-buffer)
+(defun julia-help-test--show (payload from-buffer)
   "Send PAYLOAD through the entry point, as the vterm filter would."
   (with-current-buffer from-buffer
-    (julia-help-show "documentation" mime
+    (julia-help-show "documentation" "application/json"
                      (base64-encode-string (encode-coding-string payload 'utf-8) t))))
 
 (defun julia-help-test--bare-facts (absent)
@@ -250,7 +246,6 @@ only the string passed while the real key ran something else."
 report what the buffer holds."
   (julia-help-test--reset)
   (julia-help-test--show (format julia-help-test--no-annotation absent absent absent absent)
-                         "application/json"
                          (get-buffer-create "*julia-help-test-repl*"))
   (let ((buffer (get-buffer "*julia-help*")))
     (list :name (and buffer (buffer-name buffer))
@@ -326,7 +321,7 @@ report what the buffer holds."
 (ert-deftest julia-help-test-payload ()
   "The whole road the vterm escape takes, from base64 in to a drawn buffer."
   (julia-help-test--reset)
-  (julia-help-test--show julia-help-test--payload "application/json"
+  (julia-help-test--show julia-help-test--payload
                          (get-buffer-create "*julia-help-test-repl*"))
   (let ((buffer (get-buffer "*julia-help: sin*")))
     (should buffer)
@@ -339,8 +334,8 @@ report what the buffer holds."
     (with-current-buffer buffer
       (should (julia-help-test--finds-p "Base.sin"))
       (should (julia-help-test--finds-p "Defined in:  Base"))
-      ;; Union{} is what Julia reports for a binding with no methods, and
-      ;; "Signature: Union{}" would be noise.
+      ;; A bare `?sin' has no queried signature, and the payload says so with
+      ;; null rather than by rendering `Union{}' for Emacs to recognise.
       (should-not (julia-help-test--finds-p "Signature"))
       (should (julia-help-test--finds-p "Documentation"))
       (should (julia-help-test--rendered-p "Compute sine of"))
@@ -355,17 +350,20 @@ report what the buffer holds."
       ;; case too, not only in the bare-HTML one.
       (should (julia-help-test--button-with 'julia-help-ref)))))
 
-;; The text/html road, which is what an EmacsVterm.jl without the JSON half
-;; sends: it must still render rather than error.
-(ert-deftest julia-help-test-html-only ()
-  "HTML with no metadata renders, under the plain buffer name."
+(ert-deftest julia-help-test-signature-line ()
+  "A payload carrying a real signature must render a Signature: line.
+The payload fixture's `typesig' is null, and a bare `?sin' has no queried
+signature, so nothing else in the suite would notice that line going missing."
   (julia-help-test--reset)
-  (julia-help-test--show "<p>Only HTML here.</p>" "text/html"
-                         (get-buffer-create "*julia-help-test-repl*"))
-  (let ((buffer (get-buffer "*julia-help*")))
-    (should buffer)
-    (with-current-buffer buffer
-      (should (julia-help-test--rendered-p "Only HTML here.")))))
+  (julia-help-test--show
+   (concat "{\"symbol\":\"sin\",\"binding\":\"Base.sin\",\"module\":\"Base\","
+           "\"typesig\":\"Tuple{typeof(sin), Float64}\","
+           "\"html\":\"<p>Compute sine of <code>x</code>.</p>\","
+           "\"results\":[]}")
+   (get-buffer-create "*julia-help-test-repl*"))
+  (with-current-buffer (get-buffer "*julia-help: sin*")
+    (should (julia-help-test--finds-p
+             "Signature:   Tuple{typeof(sin), Float64}"))))
 
 ;;; 3n. What `?help' sends: nothing attached at all
 
@@ -424,7 +422,7 @@ keymap outranks the major-mode map -- while `shr-map' binds TAB to
 `shr-next-link'.  So TAB worked in prose and on a cross-reference, but on any
 other link it ran shr's link walker: it depended on where point was."
   (julia-help-test--reset)
-  (julia-help-test--show julia-help-test--tab-payload "application/json"
+  (julia-help-test--show julia-help-test--tab-payload
                          (get-buffer-create "*julia-help-test-repl*"))
   (with-current-buffer (get-buffer "*julia-help: tabprobe*")
     ;; The header, which we write ourselves -- shr never touches it.
@@ -456,7 +454,7 @@ other link it ran shr's link walker: it depended on where point was."
 
 (ert-deftest julia-help-test-follow-sends-to-the-repl ()
   (julia-help-test--reset)
-  (julia-help-test--show julia-help-test--payload "application/json"
+  (julia-help-test--show julia-help-test--payload
                          (get-buffer-create "*julia-help-test-repl*"))
   (with-current-buffer (get-buffer "*julia-help: sin*")
     (goto-char (point-min))
@@ -474,42 +472,12 @@ other link it ran shr's link walker: it depended on where point was."
 (ert-deftest julia-help-test-dead-repl-is-reported ()
   "A doc buffer with no live REPL must say so, not fail obscurely."
   (julia-help-test--reset)
-  (julia-help-test--show julia-help-test--payload "application/json"
+  (julia-help-test--show julia-help-test--payload
                          (get-buffer-create "*julia-help-test-repl*"))
   (with-current-buffer (get-buffer "*julia-help: sin*")
     (setq julia-help--repl-buffer nil)
     (should (equal '(user-error "The Julia REPL this documentation came from is gone")
                    (condition-case e (julia-help--send "sin") (error e))))))
-
-;;; 5. Anything that is not documentation is left to julia-repl
-
-;; `EmacsVterm.options.image = true' in this machine's startup.jl, so images
-;; really do arrive down this same escape sequence.  They are not ours to
-;; render; the delegation is what keeps them working, so it is worth a test.
-;; (`julia-repl--show' is undefined in this harness -- julia-repl is not on
-;; `load-path' here -- which is what lets the next test see the error branch.)
-(ert-deftest julia-help-test-images-are-left-to-julia-repl ()
-  (setq julia-help-test--delegated nil)
-  (cl-letf (((symbol-function 'julia-repl--show)
-             (lambda (kind mime data)
-               (push (list kind mime data) julia-help-test--delegated))))
-    (with-temp-buffer
-      (julia-help-show "image" "image/png" "AAAA")))
-  (should (equal '(("image" "image/png" "AAAA"))
-                 (nreverse julia-help-test--delegated))))
-
-;; `text-quoting-style' is pinned because Emacs rewrites the ` and ' in an
-;; error message when it is *displayed*: the same call reports
-;; "Unsupported data kind ‘nonsense’..." or "...`nonsense'..." depending on a
-;; user setting, and comparing against either spelling would make this test
-;; depend on whose Emacs ran it.
-(ert-deftest julia-help-test-unknown-kind-is-reported ()
-  (should (equal '(error "Unsupported data kind `nonsense' or MIME type `text/plain'")
-                 (let ((text-quoting-style 'grave))
-                   (condition-case e
-                       (with-temp-buffer
-                         (julia-help-show "nonsense" "text/plain" ""))
-                     (error e))))))
 
 (provide 'julia-help-test)
 

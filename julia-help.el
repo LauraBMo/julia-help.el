@@ -7,7 +7,7 @@
 ;; URL: https://github.com/LauraBMo/julia-help.el
 ;; Version: 0.1.0
 ;; Keywords: docs, languages
-;; Package-Requires: ((emacs "27.1"))
+;; Package-Requires: ((emacs "29.1"))
 ;; SPDX-License-Identifier: MIT
 
 ;; This file is not part of GNU Emacs.
@@ -24,15 +24,14 @@
 ;;
 ;; Usage: `julia-repl--show' calls `julia-help-show' when Julia sends
 ;; `documentation' as `application/json', and `julia-help-mode' is where the
-;; documentation arrives.  Requiring this file is enough.
+;; documentation arrives.  That needs a `julia-repl' new enough to advertise
+;; the JSON form and an EmacsVterm.jl that sends it; this file is the renderer.
 
 ;;; Code:
 
 (require 'button)
-(require 'json)
 (require 'shr)
 
-(declare-function julia-repl--show "julia-repl" (kind mime data))
 (declare-function vterm-send-string "vterm" (string &optional now))
 
 ;; Declared, not defined: julia-repl owns it (see the `add-to-list' below).
@@ -72,22 +71,23 @@ current, so that is where a cross-reference is sent back to.")
 (defvar julia-help--pending-back nil
   "Buffer a link was followed from; the next doc buffer links back to it.
 A link sets this before it sends -- the buffer it is asking for does not exist
-yet, since the payload that creates it arrives later through the vterm filter.")
+yet, since the payload that creates it arrives later through the vterm filter.
+Global rather than buffer-local: the buffer that sets it and the buffer that
+reads it are different, the second created only after the first has sent.")
 
 (defun julia-help--ref-target (href text)
   "The Julia symbol an `@ref' link in a rendered docstring points at, else nil.
 HREF is the link's `shr-url' property and TEXT the text it covers; nil leaves
 shr to handle the link as before.
 
-`Markdown.html' writes two shapes, both measured against `@doc sin' on 1.13:
+`Markdown.html' writes two shapes:
 
   [text](@ref)      -> href \"@ref\"       the target is the link text
   [text](@ref sym)  -> href \"@ref sym\"   the target is written out
 
 A signature link like ``[`sin(x)`](@ref)`` needs no special case: `@doc sin(x)'
-resolves the method on its own.  The shapes are told apart exactly, not with a
-bare `string-prefix-p', which would read \"@referenced\" as a cross-reference and
-hand `@doc' the tail of it."
+resolves the method on its own.  The shapes are told apart exactly: a bare
+`string-prefix-p' would read \"@referenced\" as a cross-reference."
   (let* ((raw (cond ((equal href "@ref") text)
                     ((string-prefix-p "@ref " href) (substring href 5))))
          (target (and raw (string-trim raw))))
@@ -107,13 +107,9 @@ The target rides on the button, read with `button-get'."
 FOLLOW goes into `julia-help-follow-function'.  Call once, after
 `shr-render-region'.
 
-`make-text-button' supplies the `action' that shr's own links lack -- `push-button'
-on one of those signals `void-function nil'.  And the `keymap' write takes the span
-back from `shr-map', which `make-text-button' will not replace: without it the
-button answers `push-button' while RET still runs `shr-browse-url' on the literal
-\"@ref\".
-
-shr's `face' is left alone, so a cross-reference looks as it did."
+`make-text-button' supplies the `action' shr's own links lack, and the `keymap'
+write takes the span back from `shr-map', which `make-text-button' will not
+replace.  shr's `face' is left alone, so a cross-reference looks as it did."
   (setq julia-help-follow-function follow)
   (let ((pos (point-min)))
     (while (< pos (point-max))
@@ -135,8 +131,7 @@ shr's `face' is left alone, so a cross-reference looks as it did."
 (defvar julia-help--link-keymap
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map shr-map)
-    ;; Both shapes again -- see `julia-help-mode-map'.  shr binds only the
-    ;; string form, so a real GUI TAB reaches the mode map through here anyway.
+    ;; Both shapes again -- see `julia-help-mode-map': shr binds only the string form.
     (define-key map (kbd "TAB")       #'forward-button)
     (define-key map [tab]             #'forward-button)
     (define-key map (kbd "<backtab>") #'backward-button)
@@ -144,9 +139,8 @@ shr's `face' is left alone, so a cross-reference looks as it did."
     map)
   "Keymap for link text that stays shr's, taking the movement keys back.
 `shr-render-region' puts `shr-map' on every link span, and a text-property
-keymap outranks the major-mode one; `shr-map' binds TAB to `shr-next-link', so
-TAB on such a link never reached `julia-help-mode-map'.  Everything else is
-inherited, so RET still browses the URL.")
+keymap outranks the major-mode one, so TAB there never reached
+`julia-help-mode-map'.  RET still browses the URL.")
 
 (defun julia-help--retarget-shr-links ()
   "Give TAB and S-TAB back on the link spans that stay shr's.
@@ -180,8 +174,7 @@ print an empty heading rather than skipping it."
     (define-key map (kbd "RET")       #'push-button)
     ;; TAB and S-TAB arrive in two shapes that are not interchangeable: a GUI
     ;; TAB key delivers the vector `[tab]', while `(kbd "TAB")' is the string
-    ;; "\t".  Bind both -- with only the string, `key-binding' reports the
-    ;; binding while a real keypress runs whatever else claims `[tab]'.
+    ;; "\t".  Bind both.
     (define-key map (kbd "TAB")       #'forward-button)
     (define-key map [tab]             #'forward-button)
     (define-key map (kbd "<backtab>") #'backward-button)
@@ -192,8 +185,8 @@ print an empty heading rather than skipping it."
     (define-key map (kbd "l")         #'julia-help-forward)
     ;; `gr', never `g': under Evil these buffers open in normal state, where
     ;; `g' is a prefix, and a bare `g' here would swallow `gg' along with it.
-    ;; A `g' prefix that does not bind `gg' falls through to Evil (measured),
-    ;; so this costs nothing.  Without Evil it is an ordinary binding.
+    ;; A `g' prefix that does not bind `gg' falls through to Evil, so this
+    ;; costs nothing.  Without Evil it is an ordinary binding.
     (define-key map (kbd "gr")        #'julia-help-revert)
     map)
   "Keymap for `julia-help-mode', under `special-mode-map' for `q'.")
@@ -204,13 +197,7 @@ print an empty heading rather than skipping it."
 Cross-references are buttons: RET follows one, TAB and `n' / `p' walk them,
 TAB being `forward-button' off a link as well as on one.  `h' and `l' return
 to the documentation this one was reached from and came back from; `gr'
-redraws.
-
-Under Evil, these bindings only fire if the mode map is given precedence over
-the normal state, which is where these buffers open:
-
-  (with-eval-after-load \\='evil
-    (evil-make-overriding-map julia-help-mode-map \\='normal))"
+redraws."
   ;; The methods table is aligned with `indent-to', and a tab there would make
   ;; the columns depend on `tab-width' rather than on column 44.
   (setq-local indent-tabs-mode nil))
@@ -261,12 +248,8 @@ written."
   (let ((binding (julia-help--nonempty (plist-get payload :binding)))
         (symbol (julia-help--nonempty (plist-get payload :symbol)))
         (module (julia-help--nonempty (plist-get payload :module)))
-        ;; Union{} is what Julia reports for a binding with no methods -- a
-        ;; constant, a macro -- and "Signature: Union{}" would be noise.
         (typesig (julia-help--nonempty (plist-get payload :typesig)))
         (wrote nil))
-    (when (equal typesig "Union{}")
-      (setq typesig nil))
     (when (or binding symbol)
       (julia-help--insert-heading (or binding symbol))
       (setq wrote t))
@@ -324,11 +307,9 @@ stays plain text."
   "The name of the buffer PAYLOAD belongs in.
 One buffer per symbol, as helpful does.
 
-Two kinds of payload have no symbol and get the plain name: the HTML-only one
-an older EmacsVterm.jl sends, and the one `?help' produces, which arrives with
-`symbol' present but empty.  That second case is why this asks
-`julia-help--nonempty' rather than `if-let': with an empty string, naming the
-buffer after it gives `*julia-help: *'."
+A `?help' payload arrives with `symbol' present but empty, which is why this
+asks `julia-help--nonempty' rather than `if-let': naming the buffer after an
+empty string gives `*julia-help: *'."
   (if-let ((symbol (julia-help--nonempty (plist-get payload :symbol))))
       (format "*julia-help: %s*" symbol)
     "*julia-help*"))
@@ -342,10 +323,12 @@ buffer after it gives `*julia-help: *'."
   (with-current-buffer julia-help--repl-buffer
     (vterm-send-string (concat "@doc " target "\n") t)))
 
-(defun julia-help--display (payload repl-buffer)
+(defun julia-help--display (payload)
   "Show PAYLOAD, the documentation a Julia REPL sent, in its own buffer.
-REPL-BUFFER is that REPL, where cross-references are sent back to."
-  (let* ((name (julia-help--buffer-name payload))
+The REPL is the buffer current here -- `vterm--eval' runs with the vterm buffer
+current -- and that is where a cross-reference is sent back to."
+  (let* ((repl (current-buffer))
+         (name (julia-help--buffer-name payload))
          (buffer (get-buffer-create name))
          (back julia-help--pending-back))
     (setq julia-help--pending-back nil)
@@ -353,7 +336,7 @@ REPL-BUFFER is that REPL, where cross-references are sent back to."
       (unless (derived-mode-p 'julia-help-mode)
         (julia-help-mode))
       (setq julia-help--payload payload
-            julia-help--repl-buffer repl-buffer)
+            julia-help--repl-buffer repl)
       (julia-help--render))
     ;; Wire the two buffers together, so `h' comes back and `l' goes on, and
     ;; only in the direction just travelled: following a link again from a
@@ -364,24 +347,15 @@ REPL-BUFFER is that REPL, where cross-references are sent back to."
     (pop-to-buffer buffer)
     buffer))
 
+;;;###autoload
 (defun julia-help-show (kind mime data)
-  "Show documentation sent from Julia.
-KIND is the sort of thing being sent, MIME how DATA is encoded, DATA a base64
-string.  Called from `julia-repl--show' for `documentation' sent as
-`application/json'."
-  (cond
-   ((and (equal kind "documentation") (equal mime "application/json"))
-    (julia-help--display
-     (json-parse-string (julia-help--decode data)
-                        :object-type 'plist :array-type 'list)
-     (current-buffer)))
-   ((and (equal kind "documentation") (equal mime "text/html"))
-    (julia-help--display
-     (list :html (julia-help--decode data))
-     (current-buffer)))
-   ;; Anything else -- an image, say -- is left to julia-repl.
-   ((fboundp 'julia-repl--show) (julia-repl--show kind mime data))
-   (t (error "Unsupported data kind `%s' or MIME type `%s'" kind mime))))
+  "Show documentation sent from Julia, as `julia-repl--show' calls it.
+KIND and MIME are that function's arguments, always `documentation' and
+`application/json' here; DATA is the base64 JSON payload."
+  (ignore kind mime)
+  (julia-help--display
+   (json-parse-string (julia-help--decode data)
+                      :object-type 'plist :array-type 'list)))
 
 (defun julia-help--decode (base64)
   "Decode BASE64, as UTF-8 text.
