@@ -43,6 +43,13 @@ button that opens nothing.
 - [`julia-repl`](https://github.com/tpapp/julia-repl) — the caller: its
   `julia-repl--show` hands `documentation` as `application/json` here, and
   renders every other kind itself, images included.
+
+  It has to be a version that defines `julia-repl-show-mime-types`, the variable
+  this package adds its MIME type to when it loads. The JSON support behind that
+  is not released upstream yet — it is on
+  [`json-documentation`](https://github.com/LauraBMo/julia-repl/tree/json-documentation),
+  PR pending — so an older `julia-repl` makes loading this file signal
+  `void-variable julia-repl-show-mime-types`.
 - [EmacsVterm.jl](https://github.com/wentasah/EmacsVterm.jl) loaded in the Julia
   REPL
 
