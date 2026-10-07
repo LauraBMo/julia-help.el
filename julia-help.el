@@ -35,6 +35,14 @@
 (declare-function julia-repl--show "julia-repl" (kind mime data))
 (declare-function vterm-send-string "vterm" (string &optional now))
 
+;; Declared, not defined: julia-repl owns it (see the `add-to-list' below).
+(defvar julia-repl-show-mime-types)
+
+;; Advertise the JSON form.  julia-repl puts this list in JULIA_REPL_SHOW at
+;; Julia's start; EmacsVterm.jl then sends JSON instead of HTML.
+(with-eval-after-load 'julia-repl
+  (add-to-list 'julia-repl-show-mime-types "documentation/application/json"))
+
 (defvar-local julia-help-follow-function nil
   "Function that fetches the documentation of a cross-reference target.
 Called with one argument, the symbol the link points at.  Set by
